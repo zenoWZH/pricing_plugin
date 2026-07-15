@@ -52,7 +52,7 @@ extension in `chrome://extensions`.
   - **Toggle** conversion on/off (off fully restores pages).
   - **Exchange rate** — how many RMB one USD buys (default `7`).
   - **Display** — Append (badge next to the price) or Replace.
-  - **USD decimals** — Auto, 2, 3, or 4.
+  - **USD decimals** — Auto (≥4), or exactly 4, 5, or 6.
 - Hover any converted price to see `original ≈ USD (rate)` as a tooltip.
 - Changes save automatically and apply to open tabs immediately — no reload
   needed.
