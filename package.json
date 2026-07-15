@@ -1,0 +1,18 @@
+{
+  "name": "rmb-usd-price-converter",
+  "version": "1.1.0",
+  "private": true,
+  "description": "Chrome extension that annotates RMB prices with USD equivalents — TypeScript build.",
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "bundle": "esbuild src/content.ts src/popup.ts --bundle --format=iife --target=chrome110 --outdir=dist --log-level=warning",
+    "build": "npm run typecheck && npm run bundle",
+    "watch": "npm run bundle -- --watch"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.2.2",
+    "esbuild": "^0.28.1",
+    "typescript": "^7.0.2"
+  }
+}

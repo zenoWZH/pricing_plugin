@@ -1,9 +1,17 @@
-# Architecture
+# Architecture (TypeScript build)
 
 A deliberately small Manifest V3 extension: two runtime pieces (a content
 script and a popup) that never talk to each other directly — all coordination
-happens through `chrome.storage.sync`. There is no background service worker,
-no bundler, no dependencies.
+happens through `chrome.storage.sync`. There is no background service worker.
+
+This branch is the **TypeScript variant**: sources live in `src/` as typed ES
+modules, and esbuild bundles them into the plain-JS files Chrome actually
+loads (`dist/content.js`, `dist/popup.js`). Compared to the plain-JS `main`
+branch, behavior is identical; what changes is code organization — shared
+logic (settings model, USD formatting, price matching) moves into modules
+imported by both entry points instead of being copy-pasted between them, and
+the compiler enforces the settings schema and `chrome.*` API usage at build
+time.
 
 ```mermaid
 flowchart LR
@@ -27,9 +35,14 @@ flowchart LR
 
 | File | Role |
 | --- | --- |
-| `manifest.json` | MV3 manifest. Requests only `storage`; injects `content.js` into all frames at `document_idle`. |
-| `content.js` | Finds RMB amounts in text nodes, annotates them, keeps annotations in sync with settings and with DOM changes. |
-| `popup.html` / `popup.js` | Settings editor with live preview and validation. |
+| `manifest.json` | MV3 manifest. Requests only `storage`; injects `dist/content.js` into all frames at `document_idle`. |
+| `src/settings.ts` | Shared settings model: `Settings` interface, defaults, typed load/subscribe helpers over `chrome.storage.sync`. |
+| `src/format.ts` | Shared `formatUsd()` — one implementation for both entry points (the JS branch duplicates this). |
+| `src/matcher.ts` | Pure text→price matching (`findPrices()`); no DOM dependency, unit-testable in isolation. |
+| `src/content.ts` | DOM pipeline: scans text nodes, annotates matches, keeps annotations in sync with settings and DOM changes. |
+| `popup.html` / `src/popup.ts` | Settings editor with live preview and validation. |
+| `dist/` | esbuild output — the JS Chrome loads. Committed so Load-unpacked works without Node. |
+| `tsconfig.json` / `package.json` | Strict compiler config; `npm run build` = typecheck + bundle. |
 | `icons/`, `tools/gen_icons.mjs` | Toolbar icons and the script that renders them (SVG → PNG via headless Chromium). |
 | `demo/demo.html` | Manual/automated test page: realistic pricing dashboard plus edge cases and a dynamic-content button. |
 
@@ -49,6 +62,23 @@ The popup writes with `chrome.storage.sync.set`; every page's content script
 receives `chrome.storage.onChanged` and reacts without any reload. Using
 storage as the bus avoids `tabs`/messaging permissions and makes settings
 durable and profile-synced for free.
+
+## Build pipeline
+
+```
+src/*.ts ──tsc --noEmit (strict typecheck)──▶ errors fail the build
+src/content.ts ─┐
+                ├─ esbuild --bundle --format=iife ──▶ dist/content.js, dist/popup.js
+src/popup.ts  ──┘
+```
+
+- `npm run build` — typecheck then bundle (esbuild alone does not typecheck).
+- `npm run watch` — rebundle on save while developing.
+- Each entry point becomes a self-contained IIFE; module imports are inlined,
+  so the runtime footprint is the same as the hand-written JS branch.
+- `dist/` is committed on purpose: the repo stays directly Load-unpacked-able
+  for people without Node. The tradeoff is remembering to rebuild before
+  committing source changes.
 
 ## content.js pipeline
 

@@ -57,13 +57,29 @@ extension in `chrome://extensions`.
 - Changes save automatically and apply to open tabs immediately — no reload
   needed.
 
+## Development (TypeScript branch)
+
+This branch keeps the sources in `src/*.ts` and ships the compiled bundles in
+`dist/` (committed, so Load-unpacked works without any tooling). To modify the
+extension:
+
+```bash
+npm install        # once: typescript, esbuild, @types/chrome
+npm run build      # strict typecheck + bundle to dist/
+npm run watch      # rebundle on save
+```
+
+Edit files under `src/`, never `dist/` — the build overwrites it. Reload the
+extension in `chrome://extensions` after rebuilding.
+
 ## Repository layout
 
 | Path                 | Purpose                                              |
 | -------------------- | ---------------------------------------------------- |
 | `manifest.json`      | MV3 manifest                                         |
-| `content.js`         | Finds RMB prices in text nodes and annotates them    |
-| `popup.html/js`      | Settings UI                                          |
+| `src/`               | TypeScript sources (content, popup, shared modules)  |
+| `dist/`              | Compiled bundles Chrome loads (committed)            |
+| `popup.html`         | Settings UI markup                                   |
 | `icons/`             | Toolbar/store icons                                  |
 | `tools/gen_icons.mjs`| Regenerates the icons (`node tools/gen_icons.mjs`)   |
 | `demo/demo.html`     | Demo/test page with typical and edge-case prices     |
