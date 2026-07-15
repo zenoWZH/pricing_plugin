@@ -1,0 +1,164 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>RMB → USD Converter</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #ffffff;
+    --fg: #111827;
+    --muted: #6b7280;
+    --border: #e5e7eb;
+    --accent: #16a34a;
+    --accent-soft: rgba(22, 163, 74, .12);
+    --field-bg: #f9fafb;
+    --error: #dc2626;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #1f2430;
+      --fg: #f3f4f6;
+      --muted: #9ca3af;
+      --border: #374151;
+      --accent: #34d399;
+      --accent-soft: rgba(52, 211, 153, .14);
+      --field-bg: #111827;
+      --error: #f87171;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    width: 320px;
+    margin: 0;
+    font: 13px/1.45 system-ui, -apple-system, "Segoe UI", sans-serif;
+    background: var(--bg);
+    color: var(--fg);
+  }
+  header {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 14px 16px;
+    border-bottom: 1px solid var(--border);
+  }
+  header img { width: 32px; height: 32px; }
+  header .titles { flex: 1; }
+  header h1 { margin: 0; font-size: 15px; }
+  header p { margin: 1px 0 0; font-size: 11.5px; color: var(--muted); }
+
+  .switch { position: relative; display: inline-block; width: 40px; height: 22px; flex: none; }
+  .switch input { opacity: 0; width: 0; height: 0; }
+  .switch .slider {
+    position: absolute; inset: 0; cursor: pointer;
+    background: var(--border); border-radius: 22px; transition: background .15s;
+  }
+  .switch .slider::before {
+    content: ""; position: absolute; width: 16px; height: 16px;
+    left: 3px; top: 3px; background: #fff; border-radius: 50%;
+    transition: transform .15s; box-shadow: 0 1px 2px rgba(0,0,0,.3);
+  }
+  .switch input:checked + .slider { background: var(--accent); }
+  .switch input:checked + .slider::before { transform: translateX(18px); }
+
+  main { padding: 14px 16px 6px; }
+  section { margin-bottom: 16px; }
+  label.field-label {
+    display: block; font-weight: 600; font-size: 12px;
+    margin-bottom: 6px;
+  }
+  label.field-label .hint { color: var(--muted); font-weight: 400; }
+
+  .rate-row {
+    display: flex; align-items: center; gap: 8px;
+    background: var(--field-bg);
+    border: 1px solid var(--border); border-radius: 8px;
+    padding: 8px 10px;
+  }
+  .rate-row .fixed { color: var(--muted); white-space: nowrap; }
+  .rate-row input {
+    flex: 1; width: 100%; min-width: 0;
+    border: none; outline: none; background: transparent;
+    font: inherit; font-size: 15px; font-weight: 600; color: var(--fg);
+    text-align: right;
+  }
+  .rate-row.invalid { border-color: var(--error); }
+  .preview {
+    margin: 8px 2px 0; font-size: 12px; color: var(--muted);
+  }
+  .preview b { color: var(--accent); }
+  .error { margin: 6px 2px 0; font-size: 12px; color: var(--error); }
+
+  .seg { display: flex; border: 1px solid var(--border); border-radius: 8px; overflow: hidden; }
+  .seg label {
+    flex: 1; text-align: center; padding: 7px 4px; cursor: pointer;
+    background: var(--field-bg); color: var(--muted); user-select: none;
+  }
+  .seg label + label { border-left: 1px solid var(--border); }
+  .seg input { display: none; }
+  .seg label:has(input:checked) {
+    background: var(--accent-soft); color: var(--accent); font-weight: 600;
+  }
+  .seg small { display: block; font-size: 10.5px; font-weight: 400; margin-top: 1px; }
+
+  select {
+    width: 100%; padding: 7px 10px;
+    background: var(--field-bg); color: var(--fg);
+    border: 1px solid var(--border); border-radius: 8px;
+    font: inherit;
+  }
+  footer {
+    padding: 9px 16px 12px;
+    border-top: 1px solid var(--border);
+    font-size: 11px; color: var(--muted);
+  }
+</style>
+</head>
+<body>
+  <header>
+    <img src="icons/icon48.png" alt="">
+    <div class="titles">
+      <h1>RMB → USD</h1>
+      <p>Inline price converter · 人民币转美元</p>
+    </div>
+    <label class="switch" title="Enable / disable conversion">
+      <input type="checkbox" id="enabled">
+      <span class="slider"></span>
+    </label>
+  </header>
+
+  <main>
+    <section>
+      <label class="field-label" for="rate">Exchange rate <span class="hint">· 汇率</span></label>
+      <div class="rate-row" id="rate-row">
+        <span class="fixed">1 USD =</span>
+        <input id="rate" type="number" min="0.0001" step="0.0001" inputmode="decimal">
+        <span class="fixed">RMB</span>
+      </div>
+      <p class="preview" id="preview"></p>
+      <p class="error" id="rate-error" hidden>Enter a rate greater than 0.</p>
+    </section>
+
+    <section>
+      <label class="field-label">Display <span class="hint">· 显示方式</span></label>
+      <div class="seg">
+        <label><input type="radio" name="mode" value="append">Append<small>¥30 <b>$4.14</b></small></label>
+        <label><input type="radio" name="mode" value="replace">Replace<small><b>$4.14</b> only</small></label>
+      </div>
+    </section>
+
+    <section>
+      <label class="field-label" for="decimals">USD decimals <span class="hint">· 小数位</span></label>
+      <select id="decimals">
+        <option value="auto">Auto (more digits for tiny prices)</option>
+        <option value="2">2</option>
+        <option value="3">3</option>
+        <option value="4">4</option>
+      </select>
+    </section>
+  </main>
+
+  <footer>Changes apply instantly to open pages.</footer>
+  <script src="popup.js"></script>
+</body>
+</html>

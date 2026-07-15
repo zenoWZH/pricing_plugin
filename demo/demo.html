@@ -1,0 +1,72 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>模型定价 Demo — RMB → USD converter test page</title>
+<style>
+  body {
+    margin: 0; padding: 32px;
+    background: #23262d; color: #e5e7eb;
+    font: 14px/1.7 system-ui, -apple-system, "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
+  }
+  h1 { font-size: 20px; }
+  .card {
+    background: #2b2f38; border-radius: 10px;
+    padding: 18px 22px; margin: 16px 0; max-width: 640px;
+  }
+  .card h2 { margin: 0 0 10px; font-size: 15px; color: #a5b4fc; }
+  .row { display: flex; justify-content: space-between; gap: 24px; padding: 3px 0; }
+  .row span:first-child { color: #9ca3af; }
+  .tag {
+    display: inline-block; background: #3f4451; border-radius: 6px;
+    padding: 1px 10px; margin-right: 8px; font-size: 12.5px;
+  }
+  button {
+    background: #4f46e5; color: #fff; border: none; border-radius: 8px;
+    padding: 8px 16px; font: inherit; cursor: pointer;
+  }
+</style>
+</head>
+<body>
+  <h1>claude-opus-4-6 · 模型定价</h1>
+
+  <div class="card" id="base-prices">
+    <h2>基本价格（按量计费）</h2>
+    <div class="row"><span>输入价格</span><b id="p-input">¥30.0000 / 1M Tokens</b></div>
+    <div class="row"><span>补全价格</span><b>¥150.0000 / 1M Tokens</b></div>
+    <div class="row"><span>缓存读取价格</span><b>¥3.0000 / 1M Tokens</b></div>
+    <div class="row"><span>缓存创建价格</span><b>¥37.5000 / 1M Tokens</b></div>
+  </div>
+
+  <div class="card">
+    <h2>分组价格</h2>
+    <p><span class="tag">cc特价分组</span>输入价格 ¥4.0000 / 1M Tokens，补全价格 ¥20.0000 / 1M Tokens，缓存读取价格 <span id="p-small">¥0.4000</span> / 1M Tokens</p>
+    <p><span class="tag">claude分组</span>输入价格 ¥13.0000，补全价格 ¥65.0000，缓存创建价格 ¥16.2500</p>
+    <p><span class="tag">claude官-直连分组</span>输入价格 ¥22.7500，补全价格 ¥113.7500</p>
+  </div>
+
+  <div class="card" id="edge-cases">
+    <h2>其他格式（边界用例）</h2>
+    <div>全角符号与千分位：<b id="p-fullwidth">￥1,234.56</b></div>
+    <div>后缀「元」：月费 <b id="p-yuan">99元</b>，企业套餐 <b id="p-wan">3.5万元</b></div>
+    <div>货币代码：<b id="p-cny">CNY 88.8</b> 以及 <b id="p-rmb">RMB 6</b></div>
+    <div>大额：融资 <b id="p-yi">¥2亿</b></div>
+    <div>不应转换：<b id="p-usd">$19.99</b> 与 <b id="p-eur">€10.00</b>，以及无货币的数字 42</div>
+  </div>
+
+  <div class="card">
+    <h2>动态内容（SPA 模拟）</h2>
+    <button id="add">添加一行动态价格</button>
+    <div id="dyn"></div>
+  </div>
+
+  <script>
+    document.getElementById('add').addEventListener('click', () => {
+      const div = document.createElement('div');
+      div.className = 'dyn-row';
+      div.textContent = '动态价格 ¥58.5000 / 1M Tokens';
+      document.getElementById('dyn').append(div);
+    });
+  </script>
+</body>
+</html>
