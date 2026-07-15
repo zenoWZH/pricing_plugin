@@ -25,6 +25,13 @@ tracking, everything stays local.
 - Settings sync via `chrome.storage.sync` (only permission the extension asks
   for, besides running on pages).
 
+## Documentation
+
+- **[Usage guide](docs/USAGE.md)** — installation, every setting explained,
+  supported price formats, troubleshooting, privacy.
+- **[Architecture](docs/ARCHITECTURE.md)** — how the content script scans and
+  annotates pages, the settings flow, design decisions, testing, limitations.
+
 ## Install (Load unpacked)
 
 1. Clone or download this repository.
@@ -59,6 +66,7 @@ extension in `chrome://extensions`.
 | `icons/`             | Toolbar/store icons                                  |
 | `tools/gen_icons.mjs`| Regenerates the icons (`node tools/gen_icons.mjs`)   |
 | `demo/demo.html`     | Demo/test page with typical and edge-case prices     |
+| `docs/`              | Usage guide and architecture documentation           |
 
 ## Notes & limitations
 
