@@ -18,9 +18,9 @@
 
   const DEFAULTS = {
     enabled: true,
-    rate: 7.25,        // CNY per 1 USD
+    rate: 7,           // CNY per 1 USD
     mode: 'append',    // 'append' | 'replace'
-    decimals: 'auto'   // 'auto' | '2' | '3' | '4'
+    decimals: 'auto'   // 'auto' | '4' | '5' | '6' — always at least 4
   };
   let settings = { ...DEFAULTS };
   let started = false;
@@ -44,16 +44,18 @@
     return ch === '万' ? 1e4 : ch === '亿' ? 1e8 : 1;
   }
 
+  // Always at least 4 decimal places, rounded. 'auto' extends beyond 4 for
+  // sub-cent unit prices so ~3 significant digits survive; '4'/'5'/'6' pin
+  // the width exactly.
   function formatUsd(value) {
-    let min = 2;
-    let max = 2;
+    let min = 4;
+    let max = 4;
     if (settings.decimals === 'auto') {
       if (value > 0 && value < 1) {
-        // Small unit prices (e.g. ¥0.40 / 1M tokens): keep ~3 significant digits.
-        max = Math.min(6, 2 - Math.floor(Math.log10(value)));
+        max = Math.max(4, Math.min(8, 2 - Math.floor(Math.log10(value))));
       }
     } else {
-      const d = Math.max(0, Math.min(6, parseInt(settings.decimals, 10) || 2));
+      const d = Math.max(4, Math.min(8, parseInt(settings.decimals, 10) || 4));
       min = d;
       max = d;
     }

@@ -38,12 +38,12 @@ flowchart LR
 One flat object, defaulted identically in both scripts:
 
 ```js
-{ enabled: true, rate: 7.25, mode: 'append', decimals: 'auto' }
+{ enabled: true, rate: 7, mode: 'append', decimals: 'auto' }
 ```
 
 - `rate` — RMB per 1 USD; the divisor for every conversion.
 - `mode` — `'append'` (badge next to the original) or `'replace'`.
-- `decimals` — `'auto'` | `'2'` | `'3'` | `'4'`.
+- `decimals` — `'auto'` | `'4'` | `'5'` | `'6'` (always at least 4 places).
 
 The popup writes with `chrome.storage.sync.set`; every page's content script
 receives `chrome.storage.onChanged` and reacts without any reload. Using
@@ -72,9 +72,9 @@ Each match is replaced by a small wrapper, and the surrounding text is
 preserved as sibling text nodes:
 
 ```html
-<span class="r2u-wrap" data-cny="30" title="¥30.0000 ≈ $4.14 (1 USD = 7.25 RMB)">
+<span class="r2u-wrap" data-cny="30" title="¥30.0000 ≈ $4.2857 (1 USD = 7 RMB)">
   <span class="r2u-orig">¥30.0000</span>
-  <span class="r2u-usd">$4.14</span>
+  <span class="r2u-usd">$4.2857</span>
 </span>
 ```
 
@@ -128,16 +128,19 @@ This "leave no trace when off" behavior is why disable isn't merely
 
 ### 6. Formatting
 
-`formatUsd()` implements the decimals setting. In `auto` mode values ≥ 1 get
-the usual 2 decimals; values < 1 get `2 − floor(log10(v))` decimals (capped
-at 6), i.e. roughly three significant digits — so `¥0.4000 / 1M tokens` shows
-as `$0.0552` instead of a useless `$0.06`. Fixed modes pin exactly 2/3/4
-decimals. Thousands separators come from `toLocaleString('en-US')`.
+`formatUsd()` implements the decimals setting. Every amount is printed with
+**at least 4 decimal places, rounded** (`minimumFractionDigits: 4`). In
+`auto` mode sub-dollar values may extend further — `max(4, 2 − floor(log10(v)))`
+digits, capped at 8, i.e. roughly three significant digits — so a sub-cent
+price like `¥0.0100 / 1M tokens` shows as `$0.00143` rather than being
+flattened to `$0.0014`. Fixed modes pin exactly 4/5/6 decimals. Thousands
+separators come from `toLocaleString('en-US')`, whose rounding is standard
+round-half-away-from-zero.
 
 ## popup.js
 
 Loads settings into the form, saves on every change (rate input debounced
-200 ms), and renders a live preview (`¥100 ≈ $13.79 · ¥1 ≈ $0.138`) using the
+200 ms), and renders a live preview (`¥100 ≈ $14.2857 · ¥1 ≈ $0.1429`) using the
 same formatting rules as the content script. A rate that isn't a positive
 number shows an inline error and is never written to storage — the content
 script additionally guards against a non-positive rate, so a bad value can

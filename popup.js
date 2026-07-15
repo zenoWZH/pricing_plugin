@@ -4,7 +4,7 @@
 
   const DEFAULTS = {
     enabled: true,
-    rate: 7.25,
+    rate: 7,
     mode: 'append',
     decimals: 'auto'
   };
@@ -19,15 +19,17 @@
 
   let saveTimer = null;
 
+  // Mirrors content.js: at least 4 decimal places, rounded; 'auto' extends
+  // for sub-cent prices, fixed values pin the width.
   function formatUsd(value, decimals) {
-    let min = 2;
-    let max = 2;
+    let min = 4;
+    let max = 4;
     if (decimals === 'auto') {
       if (value > 0 && value < 1) {
-        max = Math.min(6, 2 - Math.floor(Math.log10(value)));
+        max = Math.max(4, Math.min(8, 2 - Math.floor(Math.log10(value))));
       }
     } else {
-      const d = Math.max(0, Math.min(6, parseInt(decimals, 10) || 2));
+      const d = Math.max(4, Math.min(8, parseInt(decimals, 10) || 4));
       min = d;
       max = d;
     }
@@ -82,7 +84,7 @@
     const s = { ...DEFAULTS, ...stored };
     $enabled.checked = Boolean(s.enabled);
     $rate.value = s.rate;
-    $decimals.value = ['auto', '2', '3', '4'].includes(String(s.decimals)) ? String(s.decimals) : 'auto';
+    $decimals.value = ['auto', '4', '5', '6'].includes(String(s.decimals)) ? String(s.decimals) : 'auto';
     const mode = $modes.find(r => r.value === s.mode) || $modes[0];
     mode.checked = true;
     updatePreview();

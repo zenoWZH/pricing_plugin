@@ -26,9 +26,9 @@ Click the toolbar icon to open the settings popup:
 | Setting | What it does |
 | --- | --- |
 | **On/off switch** (top right) | Enables or disables conversion everywhere. Turning it off restores every page to its original text. |
-| **Exchange rate** | How many RMB one USD buys, e.g. `7.25`. This is the number *you* choose — check your bank, card issuer, or a rate site and enter the rate that matters to you. |
-| **Display** | *Append* keeps the original price and adds a green USD badge after it: `¥30.0000 [$4.14]`. *Replace* hides the RMB amount and shows only `$4.14`. |
-| **USD decimals** | *Auto* uses 2 decimals normally but keeps ~3 significant digits for sub-dollar amounts (`¥0.4000` → `$0.0552`), which matters on per-token AI pricing pages. Or pin exactly 2, 3, or 4 decimals. |
+| **Exchange rate** | How many RMB one USD buys; the default is `7`. This is the number *you* choose — check your bank, card issuer, or a rate site and enter the rate that matters to you. |
+| **Display** | *Append* keeps the original price and adds a green USD badge after it: `¥30.0000 [$4.2857]`. *Replace* hides the RMB amount and shows only `$4.2857`. |
+| **USD decimals** | Every amount shows **at least 4 decimal places, rounded**. *Auto* extends beyond 4 for sub-cent amounts so ~3 significant digits survive (`¥0.0100` → `$0.00143`), which matters on per-token AI pricing pages. Or pin exactly 4, 5, or 6 decimals. |
 
 Every change saves automatically and applies **immediately to all open
 tabs** — you never need to reload a page. Settings sync through your browser
@@ -38,9 +38,9 @@ you're signed in.
 ## Reading the annotations
 
 - The green badge after a price is the USD equivalent:
-  `补全价格 ¥150.0000 [$20.69] / 1M Tokens`.
+  `补全价格 ¥150.0000 [$21.4286] / 1M Tokens`.
 - Hover any converted price to see a tooltip with the exact conversion and
-  the rate used: `¥150.0000 ≈ $20.69 (1 USD = 7.25 RMB)`.
+  the rate used: `¥150.0000 ≈ $21.4286 (1 USD = 7 RMB)`.
 - In *Replace* mode the tooltip is how you check the original RMB amount.
 
 ## What gets converted

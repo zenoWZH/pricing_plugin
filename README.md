@@ -6,7 +6,7 @@ every RMB price, using an exchange rate **you** set — no network calls, no
 tracking, everything stays local.
 
 ```
-输入价格 ¥30.0000 / 1M Tokens      →      输入价格 ¥30.0000 [$4.14] / 1M Tokens
+输入价格 ¥30.0000 / 1M Tokens      →      输入价格 ¥30.0000 [$4.2857] / 1M Tokens
 ```
 
 ## Features
@@ -17,8 +17,9 @@ tracking, everything stays local.
   `RMB6`, `99元`, plus `万`/`亿` multipliers (`3.5万元`, `¥2亿`).
 - **Two display modes** — *Append* keeps the original price and adds a green
   USD badge; *Replace* shows only the USD amount (hover to see the original).
-- **Smart decimals** — “Auto” keeps ~3 significant digits for tiny unit prices
-  (`¥0.40 / 1M Tokens` → `$0.0552`) and 2 decimals otherwise; or pin 2–4.
+- **Precise decimals** — every USD amount shows at least 4 decimal places,
+  rounded (`¥30.0000` → `$4.2857`). “Auto” adds extra digits for sub-cent
+  unit prices (`¥0.0100 / 1M Tokens` → `$0.00143`); or pin exactly 4–6.
 - **Works on dynamic pages** — a MutationObserver converts content added later
   (SPAs, infinite scroll), and open shadow DOM is handled too.
 - **Cleanly reversible** — toggling the extension off restores the page text.
@@ -49,7 +50,7 @@ extension in `chrome://extensions`.
 
 - Click the toolbar icon to open settings:
   - **Toggle** conversion on/off (off fully restores pages).
-  - **Exchange rate** — how many RMB one USD buys (default `7.25`).
+  - **Exchange rate** — how many RMB one USD buys (default `7`).
   - **Display** — Append (badge next to the price) or Replace.
   - **USD decimals** — Auto, 2, 3, or 4.
 - Hover any converted price to see `original ≈ USD (rate)` as a tooltip.
