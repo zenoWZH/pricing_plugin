@@ -1,10 +1,12 @@
-// RMB → USD Price Converter — content script.
+// RMB → USD Price Converter — content-script JS shell (Go/WASM build).
 //
-// Scans the page for RMB amounts (¥30.00, ￥1,299, CNY 88, RMB 6, 99元,
-// 3.5万元, ¥2亿 …) and annotates each one with its USD equivalent using the
-// exchange rate configured in the popup. Reacts live to setting changes and
-// to content added dynamically (SPAs), and can fully restore the page when
-// disabled.
+// The DOM work lives here; the conversion brain lives in Go, compiled to
+// dist/converter.wasm. WASM has no DOM or chrome.* access, so this shell:
+//   1. instantiates the Go module (wasm_exec.js provides the Go runtime),
+//   2. walks the page and hands text-node strings to Go's segment(),
+//   3. builds annotation spans from the segments Go returns,
+//   4. asks Go's formatUsd() for display strings on every refresh,
+//   5. owns chrome.storage, the MutationObserver, and enable/disable.
 (() => {
   'use strict';
 
@@ -24,11 +26,7 @@
   };
   let settings = { ...DEFAULTS };
   let started = false;
-
-  // Matches, in one pass:
-  //   symbol/code first:  ¥30.00  ￥1,299.5  CNY 88  RMB6  ¥3.5万  ¥2亿
-  //   unit last:          99元  1,000 元  3.5万元  88.8 CNY  6 RMB
-  const PRICE_RE = /(?:¥|￥|\b(?:RMB|CNY))\s*([0-9][0-9,]*(?:\.[0-9]+)?)(?:\s*([万亿]))?|\b([0-9][0-9,]*(?:\.[0-9]+)?)(?:\s*([万亿]))?\s*(?:元|(?:RMB|CNY)\b)/g;
+  let wasmReady = false;
 
   const SKIP_TAGS = new Set([
     'SCRIPT', 'STYLE', 'NOSCRIPT', 'TEMPLATE', 'TEXTAREA', 'INPUT',
@@ -38,32 +36,40 @@
   // document + any open shadow roots we have discovered.
   const roots = new Set([document]);
 
-  // ---------------------------------------------------------------- helpers
+  // ------------------------------------------------------------ WASM bridge
 
-  function multiplierOf(ch) {
-    return ch === '万' ? 1e4 : ch === '亿' ? 1e8 : 1;
-  }
-
-  // Always at least 4 decimal places, rounded. 'auto' extends beyond 4 for
-  // sub-cent unit prices so ~3 significant digits survive; '4'/'5'/'6' pin
-  // the width exactly.
-  function formatUsd(value) {
-    let min = 4;
-    let max = 4;
-    if (settings.decimals === 'auto') {
-      if (value > 0 && value < 1) {
-        max = Math.max(4, Math.min(8, 2 - Math.floor(Math.log10(value))));
-      }
-    } else {
-      const d = Math.max(4, Math.min(8, parseInt(settings.decimals, 10) || 4));
-      min = d;
-      max = d;
+  async function initWasm() {
+    const go = new Go(); // provided by wasm_exec.js, injected before this file
+    const url = chrome.runtime.getURL('dist/converter.wasm');
+    let instance;
+    try {
+      ({ instance } = await WebAssembly.instantiateStreaming(fetch(url), go.importObject));
+    } catch {
+      // Some servers/contexts lose the wasm MIME type; fall back to bytes.
+      const bytes = await (await fetch(url)).arrayBuffer();
+      ({ instance } = await WebAssembly.instantiate(bytes, go.importObject));
     }
-    return '$' + value.toLocaleString('en-US', {
-      minimumFractionDigits: min,
-      maximumFractionDigits: max
+    void go.run(instance); // resolves only if the Go program exits — it never does
+    await new Promise((resolve, reject) => {
+      const t0 = Date.now();
+      (function poll() {
+        if (window.__r2uGo && window.__r2uGo.ready) return resolve();
+        if (Date.now() - t0 > 5000) return reject(new Error('Go WASM exports never appeared'));
+        setTimeout(poll, 10);
+      })();
     });
+    wasmReady = true;
   }
+
+  function goSegment(text) {
+    return JSON.parse(window.__r2uGo.segment(text));
+  }
+
+  function goFormatUsd(value, decimals) {
+    return window.__r2uGo.formatUsd(value, decimals);
+  }
+
+  // ---------------------------------------------------------------- helpers
 
   function skippableElement(el) {
     if (SKIP_TAGS.has(el.tagName)) return true;
@@ -120,14 +126,14 @@
 
     const cny = parseFloat(wrap.dataset.cny);
     const rate = Number(settings.rate);
-    if (!settings.enabled || !isFinite(cny) || !(rate > 0)) {
+    if (!settings.enabled || !wasmReady || !isFinite(cny) || !(rate > 0)) {
       usd.style.display = 'none';
       orig.style.display = '';
       wrap.removeAttribute('title');
       return;
     }
 
-    const text = formatUsd(cny / rate);
+    const text = goFormatUsd(cny / rate, String(settings.decimals));
     usd.textContent = text;
     usd.style.display = '';
     orig.style.display = settings.mode === 'replace' ? 'none' : '';
@@ -161,25 +167,18 @@
     const text = node.nodeValue;
     if (!text || text.length > 20000 || !node.isConnected) return;
 
-    PRICE_RE.lastIndex = 0;
-    if (!PRICE_RE.test(text)) return;
+    const segs = goSegment(text);
+    if (segs.length === 0) return;
     if (!convertibleTextNode(node)) return;
 
-    PRICE_RE.lastIndex = 0;
     const frag = document.createDocumentFragment();
-    let last = 0;
-    let m;
-    while ((m = PRICE_RE.exec(text)) !== null) {
-      const numStr = m[1] !== undefined ? m[1] : m[3];
-      const mult = m[1] !== undefined ? m[2] : m[4];
-      const value = parseFloat(numStr.replace(/,/g, '')) * multiplierOf(mult);
-      if (!isFinite(value)) continue;
-      if (m.index > last) frag.append(text.slice(last, m.index));
-      frag.append(makeWrap(m[0], value));
-      last = m.index + m[0].length;
+    for (const seg of segs) {
+      if (seg.cny === undefined) {
+        frag.append(seg.s);
+      } else {
+        frag.append(makeWrap(seg.s, seg.cny));
+      }
     }
-    if (last === 0) return;
-    if (last < text.length) frag.append(text.slice(last));
     node.replaceWith(frag);
   }
 
@@ -268,7 +267,7 @@
   // ---------------------------------------------------------------- control
 
   function start() {
-    if (started) return;
+    if (started || !wasmReady) return;
     if (!document.body) {
       document.addEventListener('DOMContentLoaded', () => {
         if (settings.enabled) start();
@@ -276,7 +275,9 @@
       return;
     }
     started = true;
-    for (const root of roots) observer.observe(root === document ? document.documentElement : root, OBSERVE_OPTS);
+    for (const root of roots) {
+      observer.observe(root === document ? document.documentElement : root, OBSERVE_OPTS);
+    }
     scan(document.body);
   }
 
@@ -305,8 +306,18 @@
     }
   });
 
-  chrome.storage.sync.get(DEFAULTS, stored => {
-    settings = { ...DEFAULTS, ...stored };
-    if (settings.enabled) start();
+  const settingsLoaded = new Promise(resolve => {
+    chrome.storage.sync.get(DEFAULTS, stored => {
+      settings = { ...DEFAULTS, ...stored };
+      resolve();
+    });
   });
+
+  Promise.all([settingsLoaded, initWasm()])
+    .then(() => {
+      if (settings.enabled) start();
+    })
+    .catch(err => {
+      console.error('[rmb2usd] Go/WASM core failed to initialize:', err);
+    });
 })();

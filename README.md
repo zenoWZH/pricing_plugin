@@ -52,22 +52,39 @@ extension in `chrome://extensions`.
   - **Toggle** conversion on/off (off fully restores pages).
   - **Exchange rate** — how many RMB one USD buys (default `7`).
   - **Display** — Append (badge next to the price) or Replace.
-  - **USD decimals** — Auto, 2, 3, or 4.
+  - **USD decimals** — Auto (≥4), or exactly 4, 5, or 6.
 - Hover any converted price to see `original ≈ USD (rate)` as a tooltip.
 - Changes save automatically and apply to open tabs immediately — no reload
   needed.
 
+## Development (Go/WASM branch)
+
+The conversion core is Go compiled to WebAssembly; the compiled module is
+committed, so Load-unpacked works without any toolchain. To modify the core
+you need Go ≥ 1.21:
+
+```bash
+./tools/build_wasm.sh   # rebuilds dist/converter.wasm + refreshes wasm_exec.js
+```
+
+Then reload the extension in `chrome://extensions`. The JS shell
+(`content.js`) and popup need no build step.
+
 ## Repository layout
 
-| Path                 | Purpose                                              |
-| -------------------- | ---------------------------------------------------- |
-| `manifest.json`      | MV3 manifest                                         |
-| `content.js`         | Finds RMB prices in text nodes and annotates them    |
-| `popup.html/js`      | Settings UI                                          |
-| `icons/`             | Toolbar/store icons                                  |
-| `tools/gen_icons.mjs`| Regenerates the icons (`node tools/gen_icons.mjs`)   |
-| `demo/demo.html`     | Demo/test page with typical and edge-case prices     |
-| `docs/`              | Usage guide and architecture documentation           |
+| Path                  | Purpose                                              |
+| --------------------- | ---------------------------------------------------- |
+| `manifest.json`       | MV3 manifest (WASM CSP + web-accessible resource)    |
+| `go/main.go`          | Go conversion core: matching, parsing, formatting    |
+| `dist/converter.wasm` | Compiled core, committed (~3.3 MB)                   |
+| `wasm_exec.js`        | Go's JS runtime shim (vendored from the Go distro)   |
+| `content.js`          | JS shell: DOM walking, annotations, storage          |
+| `popup.html/js`       | Settings UI (plain JS)                               |
+| `tools/build_wasm.sh` | Rebuilds the WASM module                             |
+| `icons/`              | Toolbar/store icons                                  |
+| `tools/gen_icons.mjs` | Regenerates the icons (`node tools/gen_icons.mjs`)   |
+| `demo/demo.html`      | Demo/test page with typical and edge-case prices     |
+| `docs/`               | Usage guide and architecture documentation           |
 
 ## Notes & limitations
 

@@ -1,35 +1,66 @@
-# Architecture
+# Architecture (Go → WebAssembly build)
 
-A deliberately small Manifest V3 extension: two runtime pieces (a content
-script and a popup) that never talk to each other directly — all coordination
-happens through `chrome.storage.sync`. There is no background service worker,
-no bundler, no dependencies.
+This branch is the **Go/WASM variant**: the conversion logic (price matching,
+value parsing, USD formatting) is written in Go (`go/main.go`) and compiled to
+`dist/converter.wasm`; a JavaScript shell (`content.js`) owns everything WASM
+cannot touch — the DOM, `chrome.storage`, and the MutationObserver. The popup
+and the storage-as-bus coordination are unchanged from the JS branch.
 
 ```mermaid
 flowchart LR
-    subgraph popup["popup.html + popup.js"]
+    subgraph popup["popup.html + popup.js (plain JS)"]
         UI[Settings UI]
     end
     subgraph storage["chrome.storage.sync"]
         S[(enabled, rate,\nmode, decimals)]
     end
     subgraph page["every http/https/file page"]
-        CS[content.js]
+        CS["content.js (JS shell)\nDOM walk · observer · storage"]
+        W["converter.wasm (Go)\nsegment() · formatUsd()"]
         DOM[Page DOM]
     end
     UI -- "set()" --> S
     S -- "get() on load" --> UI
     S -- "get() on load\nonChanged events" --> CS
+    CS -- "text strings" --> W
+    W -- "JSON segments /\nformatted USD" --> CS
     CS -- "scan / annotate / restore" --> DOM
 ```
+
+## The Go ⇄ JS boundary
+
+WASM modules have no DOM access and no `chrome.*` APIs — every browser
+interaction must cross back into JavaScript. The split that keeps the
+boundary thin:
+
+- **Go owns pure computation.** `segment(text)` returns the whole input
+  split into ordered pieces as JSON — `[{s:"输入价格 "},{s:"¥30.0000",cny:30},
+  {s:" / 1M Tokens"}]` — and `formatUsd(value, decimals)` returns a display
+  string. Passing *segments* rather than match offsets sidesteps the classic
+  cross-language trap: Go regexp reports byte offsets into UTF-8 while
+  JavaScript strings index UTF-16 code units, so raw offsets would be wrong
+  for any Chinese text. Strings in, strings out — no index math crosses the
+  boundary.
+- **JS owns the effects.** `content.js` instantiates the module
+  (`wasm_exec.js` is Go's runtime shim, injected first), walks text nodes,
+  builds the annotation spans from Go's segments, and handles settings and
+  mutations exactly like the JS branch.
+- **Startup is async.** The shell fetches `dist/converter.wasm` (listed under
+  `web_accessible_resources`), instantiates it, waits for Go's exports to
+  appear on the global, and only then scans. The manifest carries
+  `'wasm-unsafe-eval'` in its CSP for WASM compilation.
 
 ## Components
 
 | File | Role |
 | --- | --- |
-| `manifest.json` | MV3 manifest. Requests only `storage`; injects `content.js` into all frames at `document_idle`. |
-| `content.js` | Finds RMB amounts in text nodes, annotates them, keeps annotations in sync with settings and with DOM changes. |
-| `popup.html` / `popup.js` | Settings editor with live preview and validation. |
+| `manifest.json` | MV3 manifest. Injects `wasm_exec.js` + `content.js`; exposes `dist/converter.wasm` as a web-accessible resource; CSP allows `'wasm-unsafe-eval'`. |
+| `go/main.go` | The conversion core: price regex, value parsing (incl. 万/亿), USD formatting. Compiled with `GOOS=js GOARCH=wasm`. |
+| `dist/converter.wasm` | The compiled core (~3.3 MB; committed so Load-unpacked works without a Go toolchain). |
+| `wasm_exec.js` | Go's official JS runtime shim, vendored from the Go distribution by the build script. |
+| `content.js` | JS shell: DOM walking, annotation spans, MutationObserver, storage — delegates matching/formatting to Go. |
+| `popup.html` / `popup.js` | Settings editor, plain JS (see the duplication note below). |
+| `tools/build_wasm.sh` | Rebuilds the WASM module and refreshes `wasm_exec.js` from the local Go install. |
 | `icons/`, `tools/gen_icons.mjs` | Toolbar icons and the script that renders them (SVG → PNG via headless Chromium). |
 | `demo/demo.html` | Manual/automated test page: realistic pricing dashboard plus edge cases and a dynamic-content button. |
 
@@ -52,10 +83,10 @@ durable and profile-synced for free.
 
 ## content.js pipeline
 
-### 1. Matching
+### 1. Matching (in Go)
 
-A single regex pass per text node handles both symbol-first and unit-last
-forms, plus `万`/`亿` multipliers:
+`segmentText()` in `go/main.go` runs a single RE2 pass per text node handling
+both symbol-first and unit-last forms, plus `万`/`亿` multipliers:
 
 ```
 (?:¥|￥|\b(?:RMB|CNY))\s*([0-9][0-9,]*(?:\.[0-9]+)?)(?:\s*([万亿]))?   — ¥30.00, CNY 88, ¥3.5万
@@ -126,25 +157,53 @@ watches the document and every registered shadow root:
 This "leave no trace when off" behavior is why disable isn't merely
 `display:none` on the badges.
 
-### 6. Formatting
+### 6. Formatting (in Go)
 
-`formatUsd()` implements the decimals setting. Every amount is printed with
-**at least 4 decimal places, rounded** (`minimumFractionDigits: 4`). In
-`auto` mode sub-dollar values may extend further — `max(4, 2 − floor(log10(v)))`
-digits, capped at 8, i.e. roughly three significant digits — so a sub-cent
-price like `¥0.0100 / 1M tokens` shows as `$0.00143` rather than being
-flattened to `$0.0014`. Fixed modes pin exactly 4/5/6 decimals. Thousands
-separators come from `toLocaleString('en-US')`, whose rounding is standard
-round-half-away-from-zero.
+`formatUsd()` in `go/main.go` implements the decimals setting. Every amount
+is printed with **at least 4 decimal places, rounded**. In `auto` mode
+sub-dollar values may extend further — `max(4, 2 − floor(log10(v)))` digits,
+capped at 8, i.e. roughly three significant digits — so a sub-cent price like
+`¥0.0100 / 1M tokens` shows as `$0.00143` rather than being flattened to
+`$0.0014`. Fixed modes pin exactly 4/5/6 decimals. The implementation is
+`strconv.FormatFloat` plus hand-rolled zero-trimming and thousands
+separators, written to produce byte-identical output to the JS branch's
+`toLocaleString('en-US')` — verified by running the same e2e expectations
+against both branches.
 
 ## popup.js
 
 Loads settings into the form, saves on every change (rate input debounced
-200 ms), and renders a live preview (`¥100 ≈ $14.2857 · ¥1 ≈ $0.1429`) using the
-same formatting rules as the content script. A rate that isn't a positive
-number shows an inline error and is never written to storage — the content
-script additionally guards against a non-positive rate, so a bad value can
-never produce `Infinity` badges.
+200 ms), and renders a live preview (`¥100 ≈ $14.2857 · ¥1 ≈ $0.1429`). A rate
+that isn't a positive number shows an inline error and is never written to
+storage — the content script additionally guards against a non-positive rate,
+so a bad value can never produce `Infinity` badges.
+
+**Deliberate duplication:** the popup keeps its own ~15-line JS `formatUsd`
+for the preview instead of loading the 3.3 MB Go module on every popup open.
+That means the formatting rules exist in two languages on this branch — the
+exact kind of drift the TypeScript branch eliminates with a shared module,
+and an honest illustration of a WASM-architecture cost: sharing tiny logic
+across contexts stops being free.
+
+## Costs of the WASM architecture
+
+Compared to the plain-JS and TypeScript branches (identical behavior):
+
+- **Payload**: `converter.wasm` is ~3.3 MB (a minimal Go runtime ships inside
+  every module; TinyGo would cut this to hundreds of KB at the cost of a
+  second toolchain). The JS branches total ~10 KB.
+- **Startup**: instantiation adds tens of milliseconds per page before the
+  first scan; the JS branches scan immediately.
+- **Call overhead**: every text node costs a JS→WASM→JS round-trip plus JSON
+  serialization. Fine at page scale, but the boundary tax means WASM only
+  pays off when the computation *behind* the boundary is heavy — parsing
+  megabytes, cryptography, image work — which a price regex is not.
+- **Toolchain**: contributors need Go (only to modify the core; the compiled
+  module is committed).
+
+The reason to pick this architecture is reusing an existing Go/Rust/C++
+codebase or doing genuinely heavy computation — not line-level logic like
+this extension's, which is exactly why the difference is instructive.
 
 ## Design decisions
 

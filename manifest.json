@@ -21,9 +21,18 @@
   "content_scripts": [
     {
       "matches": ["http://*/*", "https://*/*", "file:///*"],
-      "js": ["content.js"],
+      "js": ["wasm_exec.js", "content.js"],
       "run_at": "document_idle",
       "all_frames": true
     }
-  ]
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": ["dist/converter.wasm"],
+      "matches": ["<all_urls>"]
+    }
+  ],
+  "content_security_policy": {
+    "extension_pages": "script-src 'self' 'wasm-unsafe-eval'; object-src 'self'"
+  }
 }
