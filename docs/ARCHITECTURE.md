@@ -4,25 +4,38 @@ A deliberately small Manifest V3 extension: two runtime pieces (a content
 script and a popup) that never talk to each other directly — all coordination
 happens through `chrome.storage.sync`. There is no background service worker.
 
-This branch is the **TypeScript variant**: sources live in `src/` as typed ES
-modules, and esbuild bundles them into the plain-JS files Chrome actually
-loads (`dist/content.js`, `dist/popup.js`). Compared to the plain-JS `main`
-branch, behavior is identical; what changes is code organization — shared
-logic (settings model, USD formatting, price matching) moves into modules
-imported by both entry points instead of being copy-pasted between them, and
-the compiler enforces the settings schema and `chrome.*` API usage at build
-time.
+This branch is the **TypeScript variant**. The *runtime* architecture is
+identical to the plain-JS `main` branch; what changes is the *source*
+architecture: code lives in `src/` as strict-mode ES modules with shared
+logic factored into imported modules, and esbuild bundles each entry point
+into the plain-JS files Chrome actually loads (`dist/content.js`,
+`dist/popup.js`).
+
+## This repository's branches
+
+| Branch | Implementation | What it demonstrates |
+| --- | --- | --- |
+| `main` | Plain JavaScript, zero toolchain | The baseline: repo == artifact |
+| `typescript` (this branch) | Typed modular sources + esbuild | Source architecture: modules, compile-time checking |
+| `go-wasm` | Go core compiled to WASM + JS shell | Runtime architecture: a language boundary |
+
+Every branch passes the same 28-check end-to-end suite; behavior is
+identical down to the formatted string.
+
+## Runtime topology
+
+Unchanged from `main` — the build step disappears at runtime:
 
 ```mermaid
 flowchart LR
-    subgraph popup["popup.html + popup.js"]
+    subgraph popup["popup.html + dist/popup.js"]
         UI[Settings UI]
     end
     subgraph storage["chrome.storage.sync"]
         S[(enabled, rate,\nmode, decimals)]
     end
     subgraph page["every http/https/file page"]
-        CS[content.js]
+        CS[dist/content.js]
         DOM[Page DOM]
     end
     UI -- "set()" --> S
@@ -31,37 +44,58 @@ flowchart LR
     CS -- "scan / annotate / restore" --> DOM
 ```
 
-## Components
+## Source architecture
 
-| File | Role |
-| --- | --- |
-| `manifest.json` | MV3 manifest. Requests only `storage`; injects `dist/content.js` into all frames at `document_idle`. |
-| `src/settings.ts` | Shared settings model: `Settings` interface, defaults, typed load/subscribe helpers over `chrome.storage.sync`. |
-| `src/format.ts` | Shared `formatUsd()` — one implementation for both entry points (the JS branch duplicates this). |
-| `src/matcher.ts` | Pure text→price matching (`findPrices()`); no DOM dependency, unit-testable in isolation. |
-| `src/content.ts` | DOM pipeline: scans text nodes, annotates matches, keeps annotations in sync with settings and DOM changes. |
-| `popup.html` / `src/popup.ts` | Settings editor with live preview and validation. |
-| `dist/` | esbuild output — the JS Chrome loads. Committed so Load-unpacked works without Node. |
-| `tsconfig.json` / `package.json` | Strict compiler config; `npm run build` = typecheck + bundle. |
-| `icons/`, `tools/gen_icons.mjs` | Toolbar icons and the script that renders them (SVG → PNG via headless Chromium). |
-| `demo/demo.html` | Manual/automated test page: realistic pricing dashboard plus edge cases and a dynamic-content button. |
+The interesting part of this branch is the module graph:
 
-## Settings model
-
-One flat object, defaulted identically in both scripts:
-
-```js
-{ enabled: true, rate: 7, mode: 'append', decimals: 'auto' }
+```mermaid
+flowchart TD
+    C["src/content.ts\n(DOM pipeline — effects)"] --> S["src/settings.ts\nSettings type · DEFAULTS\nloadSettings() · onSettingsChanged()"]
+    C --> F["src/format.ts\nformatUsd()"]
+    C --> M["src/matcher.ts\nfindPrices() — pure"]
+    P["src/popup.ts\n(settings UI — effects)"] --> S
+    P --> F
 ```
 
-- `rate` — RMB per 1 USD; the divisor for every conversion.
-- `mode` — `'append'` (badge next to the original) or `'replace'`.
-- `decimals` — `'auto'` | `'4'` | `'5'` | `'6'` (always at least 4 places).
+The split follows one rule: **pure logic in leaf modules, effects in entry
+points.**
 
-The popup writes with `chrome.storage.sync.set`; every page's content script
-receives `chrome.storage.onChanged` and reacts without any reload. Using
-storage as the bus avoids `tabs`/messaging permissions and makes settings
-durable and profile-synced for free.
+- `src/settings.ts` — the single authority on the settings schema: the
+  `Settings` interface, the `DisplayMode` and `DecimalsSetting` union types,
+  `DEFAULTS`, and typed helpers (`loadSettings()`, `onSettingsChanged()`)
+  that wrap `chrome.storage.sync`. Both entry points import it, so there is
+  exactly one definition of what a valid settings object is.
+- `src/format.ts` — `formatUsd()`. On `main` this function is copy-pasted
+  into `content.js` *and* `popup.js` and kept in sync by hand; here it exists
+  once and both entry points import it. This is the concrete duplication the
+  branch eliminates.
+- `src/matcher.ts` — `findPrices(text): PriceMatch[]`. Pure string → data,
+  no DOM types anywhere in the file, which makes the trickiest logic (the
+  price regex and value parsing) unit-testable without a browser.
+- `src/content.ts` / `src/popup.ts` — the effectful shells: DOM walking,
+  MutationObserver, storage subscriptions, form wiring. They contain no
+  conversion logic of their own.
+
+## What the type system buys (concretely)
+
+- **Invalid settings states are unrepresentable.** `mode` is
+  `'append' | 'replace'`, `decimals` is `'auto' | '4' | '5' | '6'`. A typo
+  like `settings.mode === 'repalce'` — which the JS branch would silently
+  accept — is a compile error. Adding a new decimals option means changing
+  the `DecimalsSetting` union, and the compiler then points at every
+  consumer that needs to handle it.
+- **The `chrome.*` surface is typed** via `@types/chrome`: wrong callback
+  signatures, misspelled API names, and wrong argument shapes fail the
+  build instead of failing on a user's machine.
+- **Strictness options do real work here.** `strict` plus
+  `noUncheckedIndexedAccess` forces the matcher to handle `undefined` regex
+  capture groups (`m[1] ?? m[3]`) — exactly the case the two-branch regex
+  produces — and DOM lookups are `HTMLElement | null`, so every
+  `querySelector` result is checked before use.
+- **Honest cost note:** typed wrappers meet reality at the storage API —
+  `@types/chrome` wants an index-signature object for `get()` defaults, so
+  `settings.ts` contains the branch's single `as unknown as` cast, localized
+  and commented. Type safety at boundaries is a negotiation, not magic.
 
 ## Build pipeline
 
@@ -72,20 +106,73 @@ src/content.ts ─┐
 src/popup.ts  ──┘
 ```
 
-- `npm run build` — typecheck then bundle (esbuild alone does not typecheck).
-- `npm run watch` — rebundle on save while developing.
-- Each entry point becomes a self-contained IIFE; module imports are inlined,
-  so the runtime footprint is the same as the hand-written JS branch.
-- `dist/` is committed on purpose: the repo stays directly Load-unpacked-able
-  for people without Node. The tradeoff is remembering to rebuild before
-  committing source changes.
+Two tools on purpose, because they do different jobs:
 
-## content.js pipeline
+- **esbuild** bundles and strips types but performs *no type checking* — it
+  is the fast emit path (`npm run watch` for instant rebuilds on save).
+- **tsc --noEmit** is the checker. `npm run build` runs it first, so a type
+  error fails the build before anything is emitted.
+
+Choices worth explaining:
+
+- **`--format=iife`** — MV3 `content_scripts` are injected as classic
+  scripts, not ES modules, so the bundle must be a self-contained
+  IIFE. Imports are inlined at build time; the emitted file has the same
+  shape (and roughly the same ~10 KB size) as the hand-written `main`
+  branch. Nothing module-related survives to runtime.
+- **`--target=chrome110`** — output syntax floor; no polyfills needed since
+  the only runtime is a modern Chromium.
+- **No minification** — the emitted code stays readable so a reviewer can
+  still audit what actually runs, keeping most of `main`'s auditability
+  story.
+- **`dist/` is committed** so Load-unpacked works without Node. The
+  tradeoff is rebuild discipline: edit `src/`, run `npm run build`, commit
+  both. (A CI check like `npm run build && git diff --exit-code dist` would
+  enforce freshness; overkill at this repo's size, worth it with more
+  contributors.)
+
+## Components
+
+| File | Role |
+| --- | --- |
+| `manifest.json` | MV3 manifest. Requests only `storage`; injects `dist/content.js` into all frames at `document_idle`. |
+| `src/settings.ts` | Settings schema authority + typed storage helpers. |
+| `src/format.ts` | Shared `formatUsd()` — one implementation for both entry points. |
+| `src/matcher.ts` | Pure text→price matching (`findPrices()`); no DOM dependency. |
+| `src/content.ts` | DOM pipeline: scan, annotate, observe, restore. |
+| `popup.html` / `src/popup.ts` | Settings editor with live preview and validation. |
+| `dist/` | esbuild output — the JS Chrome loads. Committed so Load-unpacked works without Node. |
+| `tsconfig.json` / `package.json` | Strict compiler config; `npm run build` = typecheck + bundle. |
+| `icons/`, `tools/gen_icons.mjs` | Toolbar icons and the script that renders them (SVG → PNG via headless Chromium). |
+| `demo/demo.html` | Manual/automated test page: realistic pricing dashboard plus edge cases and a dynamic-content button. |
+
+## Settings model
+
+One flat object, whose shape is now enforced by the `Settings` interface in
+`src/settings.ts`:
+
+```ts
+interface Settings {
+  enabled: boolean;
+  rate: number;              // CNY per 1 USD — the divisor for every conversion
+  mode: DisplayMode;         // 'append' | 'replace'
+  decimals: DecimalsSetting; // 'auto' | '4' | '5' | '6' — always at least 4
+}
+// DEFAULTS: { enabled: true, rate: 7, mode: 'append', decimals: 'auto' }
+```
+
+The popup writes with `chrome.storage.sync.set`; every page's content script
+receives `chrome.storage.onChanged` (via the typed `onSettingsChanged()`
+helper) and reacts without any reload. Using storage as the bus avoids
+`tabs`/messaging permissions and makes settings durable and profile-synced
+for free.
+
+## Content pipeline (src/content.ts + src/matcher.ts)
 
 ### 1. Matching
 
-A single regex pass per text node handles both symbol-first and unit-last
-forms, plus `万`/`亿` multipliers:
+`findPrices()` in `src/matcher.ts` runs a single regex pass per text node,
+handling both symbol-first and unit-last forms, plus `万`/`亿` multipliers:
 
 ```
 (?:¥|￥|\b(?:RMB|CNY))\s*([0-9][0-9,]*(?:\.[0-9]+)?)(?:\s*([万亿]))?   — ¥30.00, CNY 88, ¥3.5万
@@ -93,8 +180,11 @@ forms, plus `万`/`亿` multipliers:
 ```
 
 Word boundaries keep `RMB`/`CNY` from matching inside other words; the
-multiplier group is written so that a *absent* multiplier consumes no trailing
-whitespace (keeps the annotation flush against the matched price).
+multiplier group is written so that an *absent* multiplier consumes no
+trailing whitespace (keeps the annotation flush against the matched price).
+It returns typed `PriceMatch { index, text, cny }` records; `content.ts`
+consumes those to build DOM — the regex itself never appears in the entry
+point.
 
 ### 2. Annotating
 
@@ -130,9 +220,10 @@ invalidate the walker. Nodes longer than 20 000 characters are skipped as a
 performance guard.
 
 Elements with an open `shadowRoot` are registered as additional scan roots:
-each shadow root is scanned, observed, and remembered in a `roots` set so
-that `refreshAll()`/`unwrapAll()` can reach annotations inside them.
-(Closed shadow roots are unreachable by design — see limitations.)
+each shadow root is scanned, observed, and remembered in a
+`Set<Document | ShadowRoot>` so that `refreshAll()`/`unwrapAll()` can reach
+annotations inside them. (Closed shadow roots are unreachable by design —
+see limitations.)
 
 ### 4. Staying current on dynamic pages
 
@@ -158,23 +249,26 @@ This "leave no trace when off" behavior is why disable isn't merely
 
 ### 6. Formatting
 
-`formatUsd()` implements the decimals setting. Every amount is printed with
-**at least 4 decimal places, rounded** (`minimumFractionDigits: 4`). In
-`auto` mode sub-dollar values may extend further — `max(4, 2 − floor(log10(v)))`
-digits, capped at 8, i.e. roughly three significant digits — so a sub-cent
-price like `¥0.0100 / 1M tokens` shows as `$0.00143` rather than being
-flattened to `$0.0014`. Fixed modes pin exactly 4/5/6 decimals. Thousands
-separators come from `toLocaleString('en-US')`, whose rounding is standard
+`formatUsd()` in the shared `src/format.ts` implements the decimals setting.
+Every amount is printed with **at least 4 decimal places, rounded**
+(`minimumFractionDigits: 4`). In `auto` mode sub-dollar values may extend
+further — `max(4, 2 − floor(log10(v)))` digits, capped at 8, i.e. roughly
+three significant digits — so a sub-cent price like `¥0.0100 / 1M tokens`
+shows as `$0.00143` rather than being flattened to `$0.0014`. Fixed modes pin
+exactly 4/5/6 decimals. Thousands separators come from
+`toLocaleString('en-US')`, whose rounding is standard
 round-half-away-from-zero.
 
-## popup.js
+## Popup (src/popup.ts)
 
-Loads settings into the form, saves on every change (rate input debounced
-200 ms), and renders a live preview (`¥100 ≈ $14.2857 · ¥1 ≈ $0.1429`) using the
-same formatting rules as the content script. A rate that isn't a positive
-number shows an inline error and is never written to storage — the content
-script additionally guards against a non-positive rate, so a bad value can
-never produce `Infinity` badges.
+Loads settings through the shared `loadSettings()` helper, saves on every
+change (rate input debounced 200 ms), and renders a live preview
+(`¥100 ≈ $14.2857 · ¥1 ≈ $0.1429`) using the *same imported* `formatUsd` as
+the content script — preview and page can no longer drift apart, which is the
+point of this branch. A rate that isn't a positive number shows an inline
+error and is never written to storage — the content script additionally
+guards against a non-positive rate, so a bad value can never produce
+`Infinity` badges.
 
 ## Design decisions
 
@@ -182,28 +276,28 @@ never produce `Infinity` badges.
   storage events deliver settings changes directly to content scripts.
 - **Storage as the message bus.** Fewer permissions, less code, and
   cross-device sync compared to `chrome.tabs.sendMessage` fan-out.
-- **Annotate, don't rewrite.** Keeping the RMB text (append mode) avoids
-  destroying information; replace mode still retains it in the DOM and
-  tooltip.
-- **`¥` is treated as RMB.** The sign is shared with JPY; a per-site
-  heuristic would guess wrong silently, so the trade-off is documented and
-  the kill switch is one click away.
-- **Regex over NLP.** Price strings on real pages are highly regular; a
-  single pass with explicit boundaries is fast, predictable, and debuggable.
+- **Pure logic in leaf modules, effects in entry points.** `matcher.ts` and
+  `format.ts` import nothing and touch nothing; testable in isolation.
+- **esbuild over heavier tooling.** No framework, two entry points, no CSS
+  pipeline: a single fast bundler plus `tsc` for checking beats a
+  Vite/webpack setup this repo doesn't need.
+- **Annotate, don't rewrite / `¥` treated as RMB / regex over NLP** — same
+  runtime decisions as `main`; see that branch's doc for the rationale.
 
 ## Testing
 
 - `demo/demo.html` covers every supported format, two negative cases
   (`$`, `€`), and dynamic insertion.
-- The extension was verified end-to-end by loading it unpacked into headless
-  Chromium (Playwright `launchPersistentContext` with
+- The built extension (`dist/`) was verified end-to-end by loading it
+  unpacked into headless Chromium (Playwright `launchPersistentContext` with
   `--load-extension`), asserting 28 checks: each conversion value at the
   default rate, non-conversion of other currencies, dynamic-content
   handling, live rate changes, replace mode, disable-restores-text, and
   popup load/save/validation behavior. Settings flips were driven through
-  the content script's isolated world via CDP `Runtime.evaluate`.
-- `tools/gen_icons.mjs` regenerates the three PNG icons deterministically
-  from an inline SVG.
+  the content script's isolated world via CDP `Runtime.evaluate`. The same
+  suite runs unchanged against `main` and `go-wasm`.
+- The module split also makes `matcher.ts`/`format.ts` unit-testable without
+  a browser — the natural place to add fast tests if the format list grows.
 
 ## Known limitations
 
@@ -211,7 +305,11 @@ never produce `Infinity` badges.
   matching is per-text-node by design (stitching adjacent nodes risks
   corrupting layouts and event handlers on arbitrary sites).
 - **Closed shadow roots** cannot be entered by any extension.
-- **JPY ambiguity** as described above.
+- **JPY ambiguity**: `¥` is assumed to mean RMB; the toggle is the escape
+  hatch on JPY pages.
 - Shadow roots attached *after* their host subtree was scanned are picked up
   only when something inside them next mutates a watched tree; in practice
   frameworks attach shadow roots before inserting hosts, so this is rare.
+- **Build-freshness risk**: `dist/` can lag `src/` if a contributor forgets
+  `npm run build`; enforceable with a CI diff check when that starts to
+  matter.
