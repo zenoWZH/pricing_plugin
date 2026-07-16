@@ -1,9 +1,29 @@
-# Architecture
+# Architecture (plain JavaScript build)
 
 A deliberately small Manifest V3 extension: two runtime pieces (a content
 script and a popup) that never talk to each other directly — all coordination
 happens through `chrome.storage.sync`. There is no background service worker,
-no bundler, no dependencies.
+no bundler, no dependencies: **what is in this repository is exactly what
+Chrome executes.**
+
+## This repository's branches
+
+The same extension exists in three implementations so the architectural
+trade-offs can be compared directly. Every branch passes the same 28-check
+end-to-end suite; behavior is identical down to the formatted string.
+
+| Branch | Implementation | Architecture doc |
+| --- | --- | --- |
+| `main` (this branch) | Plain JavaScript, zero toolchain | this file |
+| `typescript` | Typed modular sources (`src/*.ts`), esbuild → `dist/` | `docs/ARCHITECTURE.md` on that branch |
+| `go-wasm` | Conversion core in Go compiled to WebAssembly + JS shell | `docs/ARCHITECTURE.md` on that branch |
+
+`typescript` changes the *source* architecture (modules, types, build step)
+while keeping this runtime design; `go-wasm` changes the *runtime*
+architecture (two languages, a WASM boundary). This branch is the baseline
+both are measured against.
+
+## Runtime topology
 
 ```mermaid
 flowchart LR
@@ -28,10 +48,43 @@ flowchart LR
 | File | Role |
 | --- | --- |
 | `manifest.json` | MV3 manifest. Requests only `storage`; injects `content.js` into all frames at `document_idle`. |
-| `content.js` | Finds RMB amounts in text nodes, annotates them, keeps annotations in sync with settings and with DOM changes. |
+| `content.js` | Finds RMB amounts in text nodes, annotates them, keeps annotations in sync with settings and with DOM changes. One self-contained IIFE, ~350 lines. |
 | `popup.html` / `popup.js` | Settings editor with live preview and validation. |
 | `icons/`, `tools/gen_icons.mjs` | Toolbar icons and the script that renders them (SVG → PNG via headless Chromium). |
 | `demo/demo.html` | Manual/automated test page: realistic pricing dashboard plus edge cases and a dynamic-content button. |
+
+## Why plain JavaScript (and what it costs)
+
+**What zero-toolchain buys:**
+
+- **The repo is the artifact.** Clone → Load unpacked. No Node, no
+  `npm install`, no build step, nothing to get out of date between source
+  and shipped code.
+- **Auditability.** What a security-conscious user reads in the repo is
+  byte-for-byte what runs in their browser — there is no compiled output to
+  trust.
+- **Zero dependency surface.** No lockfile, no supply-chain exposure, no
+  toolchain versions to keep working.
+
+**What it costs (visible in this codebase):**
+
+- **Duplication instead of imports.** `formatUsd()` exists twice — once in
+  `content.js`, once in `popup.js` — because content scripts declared in a
+  MV3 manifest are classic scripts, not ES modules, and without a bundler
+  the only sharing mechanisms are copy-paste or globals. The two copies must
+  be kept in sync by hand. (The `typescript` branch exists partly to show
+  this fixed: one `src/format.ts` imported by both entry points.)
+- **No compile-time checking.** The settings object's shape, the
+  `'append' | 'replace'` mode strings, and every `chrome.*` call are
+  enforced only by tests and discipline. A typo like `settings.mode ===
+  'repalce'` parses fine and fails silently at runtime.
+- **Structure by convention.** `content.js` is organized with banner
+  comments (helpers / DOM output / scanner / observer / control) rather than
+  module boundaries; nothing stops future edits from tangling those layers.
+
+At ~350 lines with a strong e2e suite, these costs are real but small —
+which is exactly why this branch stays plain JS and the typed variant lives
+on its own branch.
 
 ## Settings model
 
@@ -63,8 +116,8 @@ forms, plus `万`/`亿` multipliers:
 ```
 
 Word boundaries keep `RMB`/`CNY` from matching inside other words; the
-multiplier group is written so that a *absent* multiplier consumes no trailing
-whitespace (keeps the annotation flush against the matched price).
+multiplier group is written so that an *absent* multiplier consumes no
+trailing whitespace (keeps the annotation flush against the matched price).
 
 ### 2. Annotating
 
@@ -140,11 +193,11 @@ round-half-away-from-zero.
 ## popup.js
 
 Loads settings into the form, saves on every change (rate input debounced
-200 ms), and renders a live preview (`¥100 ≈ $14.2857 · ¥1 ≈ $0.1429`) using the
-same formatting rules as the content script. A rate that isn't a positive
-number shows an inline error and is never written to storage — the content
-script additionally guards against a non-positive rate, so a bad value can
-never produce `Infinity` badges.
+200 ms), and renders a live preview (`¥100 ≈ $14.2857 · ¥1 ≈ $0.1429`) using
+its own copy of the formatting rules — see the duplication note above. A rate
+that isn't a positive number shows an inline error and is never written to
+storage — the content script additionally guards against a non-positive rate,
+so a bad value can never produce `Infinity` badges.
 
 ## Design decisions
 
@@ -171,7 +224,8 @@ never produce `Infinity` badges.
   default rate, non-conversion of other currencies, dynamic-content
   handling, live rate changes, replace mode, disable-restores-text, and
   popup load/save/validation behavior. Settings flips were driven through
-  the content script's isolated world via CDP `Runtime.evaluate`.
+  the content script's isolated world via CDP `Runtime.evaluate`. The same
+  suite runs unchanged against the `typescript` and `go-wasm` branches.
 - `tools/gen_icons.mjs` regenerates the three PNG icons deterministically
   from an inline SVG.
 
