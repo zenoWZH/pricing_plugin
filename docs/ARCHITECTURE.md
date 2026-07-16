@@ -6,6 +6,20 @@ value parsing, USD formatting) is written in Go (`go/main.go`) and compiled to
 cannot touch — the DOM, `chrome.storage`, and the MutationObserver. The popup
 and the storage-as-bus coordination are unchanged from the JS branch.
 
+## This repository's branches
+
+| Branch | Implementation | What it demonstrates |
+| --- | --- | --- |
+| `main` | Plain JavaScript, zero toolchain | The baseline: repo == artifact |
+| `typescript` | Typed modular sources + esbuild | Source architecture: modules, compile-time checking |
+| `go-wasm` (this branch) | Go core compiled to WASM + JS shell | Runtime architecture: a language boundary |
+
+Every branch passes the same 28-check end-to-end suite; behavior is
+identical down to the formatted string — the Go formatter was written to
+match `toLocaleString('en-US')` byte for byte.
+
+## Runtime topology
+
 ```mermaid
 flowchart LR
     subgraph popup["popup.html + popup.js (plain JS)"]
@@ -49,6 +63,73 @@ boundary thin:
   `web_accessible_resources`), instantiates it, waits for Go's exports to
   appear on the global, and only then scans. The manifest carries
   `'wasm-unsafe-eval'` in its CSP for WASM compilation.
+
+## Startup lifecycle
+
+Unlike the JS branches, nothing can convert until the module is up. The
+sequence on every page load:
+
+```mermaid
+sequenceDiagram
+    participant Chrome
+    participant Shell as content.js (isolated world)
+    participant Wasm as converter.wasm (Go)
+    Chrome->>Shell: inject wasm_exec.js, then content.js (document_idle)
+    Shell->>Shell: chrome.storage.sync.get(DEFAULTS)
+    Shell->>Chrome: fetch(chrome.runtime.getURL('dist/converter.wasm'))
+    Chrome-->>Shell: wasm bytes (web_accessible_resources)
+    Shell->>Wasm: WebAssembly.instantiateStreaming(…, go.importObject)
+    Shell->>Wasm: go.run(instance) — starts the Go runtime, never returns
+    Wasm->>Shell: main() sets globalThis.__r2uGo = {segment, formatUsd, ready}
+    Shell->>Shell: poll until __r2uGo.ready (≤5 s), then scan(document.body)
+```
+
+Details that matter:
+
+- **Script order in the manifest is load-bearing**: `wasm_exec.js` must run
+  first because it defines the `Go` class `content.js` instantiates.
+- `WebAssembly.instantiateStreaming` needs the `application/wasm` MIME type;
+  `chrome-extension://` URLs provide it, but the shell still falls back to
+  `arrayBuffer()` + `instantiate()` for robustness.
+- `go.run(instance)` is **not awaited** — its promise resolves only when the
+  Go program exits, and `main()` ends in `select {}` precisely so it never
+  does. Readiness is signaled by the `ready` flag the Go side sets after
+  registering its exports.
+- Settings load and WASM init run in parallel (`Promise.all`); scanning
+  starts when both are done. If instantiation fails, the shell logs one
+  console error and stays inert — the page is never half-converted.
+
+## How the exports work (syscall/js)
+
+Go's `syscall/js` package is the FFI. `main()` builds a plain JS object and
+hangs Go closures on it:
+
+```go
+api := js.Global().Get("Object").New()
+api.Set("segment", js.FuncOf(func(_ js.Value, args []js.Value) any {
+    b, _ := json.Marshal(segmentText(args[0].String()))
+    return string(b)
+}))
+api.Set("formatUsd", js.FuncOf(func(_ js.Value, args []js.Value) any {
+    return formatUsd(args[0].Float(), args[1].String())
+}))
+api.Set("ready", true)
+js.Global().Set("__r2uGo", api)
+```
+
+- `js.FuncOf` wraps a Go function as a JS-callable; each call suspends into
+  the Go scheduler and copies arguments across (strings and numbers only
+  here — the cheap kinds).
+- Results cross the boundary as a **JSON string** rather than a tree of
+  `js.Value` objects: one boundary crossing plus one `JSON.parse` beats
+  building nested JS objects property-by-property from Go, and it keeps the
+  wire format inspectable in DevTools.
+- Because content scripts run in an isolated world, `js.Global()` *is* that
+  isolated world — the page's own scripts never see `__r2uGo` or the Go
+  runtime.
+- The Go heap lives inside the module's linear memory; Go's GC runs in
+  there. Strings passed in/out are copied, not shared, so neither side can
+  corrupt the other.
 
 ## Components
 
@@ -94,8 +175,21 @@ both symbol-first and unit-last forms, plus `万`/`亿` multipliers:
 ```
 
 Word boundaries keep `RMB`/`CNY` from matching inside other words; the
-multiplier group is written so that a *absent* multiplier consumes no trailing
-whitespace (keeps the annotation flush against the matched price).
+multiplier group is written so that an *absent* multiplier consumes no
+trailing whitespace (keeps the annotation flush against the matched price).
+
+Two Go-specific notes:
+
+- **The engine is RE2**, not a backtracking engine like JS's. The pattern
+  uses nothing RE2 lacks (no lookaround, no backreferences), and RE2's `\b`
+  is ASCII-defined — which matches the JS semantics for this pattern, since
+  the boundary always sits between an ASCII letter/digit and something else.
+  RE2 brings a real upside: guaranteed linear-time matching, so no
+  pathological page text can trigger catastrophic backtracking.
+- **Offsets from `FindAllStringSubmatchIndex` are byte offsets** into UTF-8.
+  They are used only *inside* Go to slice the original string into segment
+  strings — they never cross to JS, which is the whole point of the segment
+  API (JS would need UTF-16 offsets).
 
 ### 2. Annotating
 
@@ -204,6 +298,32 @@ Compared to the plain-JS and TypeScript branches (identical behavior):
 The reason to pick this architecture is reusing an existing Go/Rust/C++
 codebase or doing genuinely heavy computation — not line-level logic like
 this extension's, which is exactly why the difference is instructive.
+
+## Build mechanics
+
+`./tools/build_wasm.sh` does two things:
+
+```bash
+GOOS=js GOARCH=wasm go build -trimpath -ldflags='-s -w' -o dist/converter.wasm ./go
+cp "$(go env GOROOT)/lib/wasm/wasm_exec.js" wasm_exec.js
+```
+
+- `GOOS=js GOARCH=wasm` selects Go's browser target; `syscall/js` only
+  compiles under it (`//go:build js && wasm` guards the source).
+- `-ldflags='-s -w'` strips symbol tables and DWARF debug info — the
+  difference between ~4.5 MB and ~3.3 MB. `-trimpath` removes local build
+  paths for reproducibility.
+- **`wasm_exec.js` is version-paired with the compiler.** The shim speaks a
+  private ABI with binaries built by the same Go version, which is why the
+  script re-copies it from the active toolchain on every build instead of
+  pinning a copy (Go 1.24 moved it from `misc/wasm/` to `lib/wasm/`; the
+  script checks both).
+- Both artifacts are committed so users can Load-unpacked without Go
+  installed; only core changes require the toolchain.
+- **TinyGo** (`tinygo build -target wasm`) would shrink the module to a few
+  hundred KB by swapping the runtime, at the cost of a second toolchain,
+  slower builds, and occasional stdlib gaps — the natural next step if this
+  architecture ever shipped for real.
 
 ## Design decisions
 
